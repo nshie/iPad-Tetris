@@ -1,0 +1,1389 @@
+import Foundation
+import AVFoundation
+import UIKit
+import AudioToolbox
+
+let DAS: Double = 0.07
+let ARR: Double = 0
+let dARR: Double = 0.015
+let dropInterval: Double = 0.75
+
+let dPadLeftRightDeadZone: Double = 2.5
+let dPadHardDropDeadZone: Double = 3
+let dPadSoftDropDeadZone: Double = 5
+
+var debugText = Text(string: "")
+
+var gameEnded = false
+
+//getting color right
+let blue = Color(hue: 0.6, saturation: 0.9, brightness: 0.7)
+let orange = Color(hue: 0.1, saturation: 0.9, brightness: 1)
+let yellow = Color(hue: 0.14, saturation: 1, brightness: 1)
+let lightBlue = Color(hue: 0.5, saturation: 1, brightness: 0.9)
+let purple = Color(hue: 0.78, saturation: 0.9, brightness: 0.8)
+let green = Color(hue: 0.27, saturation: 0.9, brightness: 0.9)
+let red = Color(hue: 0, saturation: 1, brightness: 0.93)
+
+Canvas.shared.color = Color.white.darker(percent: 0.7)
+let backgroundColor = Color.white.darker(percent: 0.55)
+let backgroundBorderColor = Color.white.darker(percent: 0.7)
+let backgroundBorderWidth = 0.3
+
+let screenWidth = 102.4
+let screenHeight = 77
+
+enum tetriminoTypes {
+    case LPiece
+    case JPiece
+    case IPiece
+    case OPiece
+    case TPiece
+    case SPiece
+    case ZPiece
+}
+
+let blockSize: Double = 3
+let nextWindowScale: Double = 1
+let tickRate: Double = 0.005
+let fallSpeed: Double = 0.5
+
+let gridOffsetX: Double = -4.5 * blockSize
+let gridOffsetY: Double = -9 * blockSize
+
+var activeTetriminoDropped = false
+
+var tick = 0
+let tickCap = 500
+
+class mino: Rectangle {
+    var position: Int = 199
+    
+    var baseColor: Color = Color.clear
+    
+    func setPosition(position: Int) {
+        self.center.x = Double(position % 10) * blockSize + gridOffsetX
+        self.center.y = (floor(Double(position / 10))) * blockSize + gridOffsetY
+            
+        self.position = position
+    }
+}
+
+var minoSpaceGrid = [Int: Color]()
+var minoSpaceGridVisual = [Int: Rectangle]()
+
+func updateMinoSpaceGridVisual() {
+    for space in minoSpaceGridVisual {
+        if space.key > 199 {
+            space.value.color = Color.clear
+            space.value.borderColor = Color.clear
+        }else if minoSpaceGrid[space.key] == Color.clear {
+            space.value.color = backgroundColor
+            space.value.borderColor = backgroundBorderColor
+        }else {
+            space.value.color = minoSpaceGrid[space.key]!
+            space.value.borderColor = minoSpaceGrid[space.key]!.darker(percent: 0.2)
+        }
+    }
+}
+
+for i in 0 ... 209 {
+    minoSpaceGrid.updateValue(Color.clear, forKey: i)
+    minoSpaceGridVisual.updateValue(Rectangle(width: blockSize * 0.99, height: blockSize * 0.99), forKey: i)
+    minoSpaceGridVisual[i]!.center.x = Double(i % 10) * blockSize + gridOffsetX
+    minoSpaceGridVisual[i]!.center.y = (floor(Double(i / 10))) * blockSize + gridOffsetY
+    
+    minoSpaceGridVisual[i]!.color = backgroundColor
+    minoSpaceGridVisual[i]!.borderColor = backgroundBorderColor
+    minoSpaceGridVisual[i]!.borderWidth = backgroundBorderWidth
+}
+
+//utility functions
+func distance(_ a: Point, _ b: Point) -> Double {
+    let xDist = a.x - b.x
+    let yDist = a.y - b.y
+    return Double(sqrt((xDist * xDist) + (yDist * yDist)))
+}
+
+func delay(_ delay:Double, closure:@escaping ()->()) {
+    let when = DispatchTime.now() + delay
+    DispatchQueue.main.asyncAfter(deadline: when, execute: closure)
+}
+
+func playSound(url: URL, loops: Int) {
+    do {
+        let sound = try AVAudioPlayer(contentsOf: url)
+        sound.numberOfLoops = loops
+        sound.play()
+    }catch {
+        print(error)
+    }
+}
+
+class tetrimino {
+    var tetriminoDownTime: Double = 0
+    
+    public var ghostMinos = [mino(width: blockSize * 0.97, height: blockSize * 0.97), mino(width: blockSize * 0.97, height: blockSize * 0.97), mino(width: blockSize * 0.97, height: blockSize * 0.97), mino(width: blockSize * 0.97, height: blockSize * 0.97)]
+    
+    public var tMinos = [mino(width: blockSize * 0.98, height: blockSize * 0.98), mino(width: blockSize * 0.98, height: blockSize * 0.98), mino(width: blockSize * 0.98, height: blockSize * 0.98), mino(width: blockSize * 0.98, height: blockSize * 0.98)]
+    
+    var color = Color.clear
+    
+    func updateGhostTetrimino() {
+        
+        for i in 0 ... 3 {
+            ghostMinos[i].setPosition(position: tMinos[i].position)
+        }
+        
+        var needToBreak = false
+        
+        for i in 1 ... 20 {
+            
+            for mino in ghostMinos {
+                if mino.position < 10 {
+                    needToBreak = true
+                }else if minoSpaceGrid[mino.position - 10]! != Color.clear {
+                    needToBreak = true
+                }
+            }
+            
+            if needToBreak {
+                break
+            }else {
+                for mino in ghostMinos {
+                    mino.setPosition(position: mino.position - 10)
+                }
+            }
+        }
+    }
+    
+    //updare both setColor and updateMinoColor to get both to be consistent
+    
+    func setColor(color: Color) {
+        for mino in tMinos {
+            mino.borderWidth = backgroundBorderWidth * 5
+            
+            mino.color = color
+            mino.borderColor = color.darker(percent: 0.1)
+            
+            mino.baseColor = color
+        }
+        
+        for mino in ghostMinos {
+            mino.borderWidth = backgroundBorderWidth * 6
+            
+            mino.color = color.withAlpha(alpha: 0)
+            mino.borderColor = color.lighter(percent: 0.05)
+        }
+    }
+    
+    func updateMinoColor() {
+        for i in 0 ... 3 {
+            if tMinos[i].position > 199 {
+                tMinos[i].color = Color.clear
+                tMinos[i].borderColor = Color.clear
+            }else {
+                tMinos[i].color = tMinos[i].baseColor
+                tMinos[i].borderColor = tMinos[i].baseColor.darker(percent: 0.1)
+            }
+        }
+        
+        updateGhostTetrimino()
+        
+        for i in 0 ... 3 {
+            if ghostMinos[i].position > 199 {
+                ghostMinos[i].color = Color.clear
+                ghostMinos[i].borderColor = Color.clear
+            }else {
+                ghostMinos[i].color = Color.clear
+                ghostMinos[i].borderColor = tMinos[i].baseColor.lighter(percent: 0.05)
+            }
+        }
+    }
+    
+    func endGameCheck() {
+        for mino in tMinos {
+            if minoSpaceGrid[mino.position]! != Color.clear {
+                gameEnded = true
+            }
+        }
+    }
+    
+    func remove() {
+        for mino in tMinos {
+            mino.remove()
+        }
+        for mino in ghostMinos {
+            mino.remove()
+        }
+    }
+    
+    func moveRight() {
+        var move = true
+        for mino in tMinos {
+            if floor(Double(mino.position / 10)) < floor(Double((mino.position + 1) / 10)){
+                move = false
+            }else if minoSpaceGrid[mino.position + 1] != Color.clear {
+                move = false
+            }
+        }
+        if move {
+            for mino in tMinos {
+                mino.setPosition(position: mino.position + 1)
+            }
+            updateGhostTetrimino()
+        }
+    }
+    
+    func moveLeft() {
+        var move = true
+        for mino in tMinos {
+            if floor(Double(mino.position / 10)) > floor(Double((mino.position - 1) / 10)){
+                move = false
+            }else if minoSpaceGrid[mino.position - 1] != Color.clear {
+                move = false
+            }
+        }
+        if move {
+            for mino in tMinos {
+                mino.setPosition(position: mino.position - 1)
+            }
+            updateGhostTetrimino()
+        }
+    }
+    
+    func moveDown() {
+        var move = true
+        for mino in tMinos {
+            if mino.position < 10 {
+                move = false
+            }else if minoSpaceGrid[mino.position - 10]! != Color.clear {
+                move = false
+            }
+        }
+        
+        if move {
+            for mino in tMinos {
+                mino.setPosition(position: mino.position - 10)
+            }
+        }else {
+            activeTetriminoDropped = true
+            tick = 0
+        }
+        
+        updateMinoColor()
+    }
+    func drop() {
+        var needToBreak = false
+        
+        for i in 1 ... 20 {
+            var move = true
+            for mino in tMinos {
+                if mino.position < 10 {
+                    move = false
+                }else if minoSpaceGrid[mino.position - 10]! != Color.clear {
+                    move = false
+                }
+            }
+            
+            if move {
+                for mino in tMinos {
+                    mino.setPosition(position: mino.position - 10)
+                }
+            }else {
+                activeTetriminoDropped = true
+                tick = 0
+            }
+            
+            if needToBreak {
+                break
+            }
+            
+            for mino in tMinos {
+                if mino.position < 10 {
+                    needToBreak = true
+                }else if minoSpaceGrid[mino.position - 10]! != Color.clear {
+                    needToBreak = true
+                }
+            }
+        }
+        updateMinoColor()
+    }
+    
+    var rotationState: Int = 0
+    var rotationStates = [0:[0, 0, 0, 0], 1:[0, 0, 0, 0], 2:[0, 0, 0, 0], 3:[0, 0, 0, 0]]
+    
+    //syntax = rotationOffsets[rotationState][test][which value you want(x or y)]
+    var rotationOffsets = [
+     /*0*/ 0:[0:[0, 0], 1:[-1, 0], 2:[-1, 1], 3:[0, -2], 4:[-1, -2]],
+     /*1*/ 1:[0:[0, 0], 1:[1, 0], 2:[1, -1], 3:[0, 2], 4:[1, 2]],
+     /*2*/ 2:[0:[0, 0], 1:[1, 0], 2:[1, 1], 3:[0, -2], 4:[1, -2]],
+     /*3*/ 3:[0:[0, 0], 1:[-1, 0], 2:[-1, -1], 3:[0, 2], 4:[-1, 2]]
+     ]
+    
+    func rotateRight() {
+        
+        for rotationTest in 0 ... 4 {
+            var canRotate = true
+            
+            for i in 0 ... 3 {
+                if canRotate {
+                    let predictedPosition = tMinos[i].position + rotationStates[rotationState]![i] + rotationOffsets[rotationState]![rotationTest]![0] + (10 * rotationOffsets[rotationState]![rotationTest]![1])
+                    
+                    //cant rotate because...
+                    if ((tMinos[i].position % 10) - 2 < 0) {
+                        if ((predictedPosition % 10) + 2 > 9) {
+                            canRotate = false
+                        }
+                    }
+                    if ((tMinos[i].position % 10) + 2 > 9) {
+                        if ((predictedPosition % 10) - 2 < 0) {
+                            canRotate = false
+                        }
+                    }
+                    if predictedPosition < 0 {
+                        canRotate = false
+                    }
+                    if minoSpaceGrid[predictedPosition] != Color.clear {
+                        canRotate = false
+                    }
+                }
+            }
+            
+            if canRotate {
+                
+                for i in 0 ... 3 {
+                    let predictedPosition = tMinos[i].position + rotationStates[rotationState]![i] + rotationOffsets[rotationState]![rotationTest]![0] + (10 * rotationOffsets[rotationState]![rotationTest]![1])
+                    
+                    tMinos[i].setPosition(position: predictedPosition)
+                }
+                
+                rotationState = (rotationState + 1) % 4
+                
+                updateGhostTetrimino()
+                updateMinoColor()
+                break
+            }
+        }
+    }
+    
+    func rotateLeft() {
+        for rotationTest in 0 ... 4 {
+            var canRotate = true
+            
+            for i in 0 ... 3 {
+                if canRotate {
+                    let predictedPosition = tMinos[i].position - rotationStates[(rotationState + 3) % 4]![i] + (-1 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![0]) + (-1 * (10 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![1]))
+                    
+                    //cant rotate because...
+                    if ((tMinos[i].position % 10) - 2 < 0) {
+                        if ((predictedPosition % 10) + 2 > 9) {
+                            canRotate = false
+                        }
+                    }
+                    if ((tMinos[i].position % 10) + 2 > 9) {
+                        if ((predictedPosition % 10) - 2 < 0) {
+                            canRotate = false
+                        }
+                    }
+                    if predictedPosition < 0 {
+                        canRotate = false
+                    }
+                    if minoSpaceGrid[predictedPosition] != Color.clear {
+                        canRotate = false
+                    }
+                }
+            }
+            
+            if canRotate {
+                
+                for i in 0 ... 3 {
+                    let predictedPosition = tMinos[i].position - rotationStates[(rotationState + 3) % 4]![i] + (-1 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![0]) + (-1 * (10 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![1]))
+                    
+                    tMinos[i].setPosition(position: predictedPosition)
+                }
+                
+                rotationState = (rotationState + 3) % 4
+                
+                updateGhostTetrimino()
+                updateMinoColor()
+                break
+            }
+        }
+        
+        /*for i in 0 ... 3 {
+            tMinos[i].setPosition(position: tMinos[i].position - rotationStates[(rotationState + 3) % 4]![i])
+        }
+        
+        rotationState = (rotationState + 3) % 4
+ */
+    }
+}
+    
+class LPiece: tetrimino {
+    override init() {
+        super.init()
+        tMinos[0].setPosition(position: 183)
+        tMinos[1].setPosition(position: 184)
+        tMinos[2].setPosition(position: 185)
+        tMinos[3].setPosition(position: 195)
+        setColor(color: orange)
+        
+        updateGhostTetrimino()
+        
+        rotationState = 0
+        rotationStates = [0:[11, 0, -11, -20], 1:[-9, 0, 9, -2], 2:[-11, 0, 11, 20], 3:[9, 0, -9, 2]]
+    }
+}
+
+class JPiece: tetrimino {
+    override init() {
+        super.init()
+        tMinos[0].setPosition(position: 193)
+        tMinos[1].setPosition(position: 183)
+        tMinos[2].setPosition(position: 184)
+        tMinos[3].setPosition(position: 185)
+        setColor(color: blue)
+        
+        updateGhostTetrimino()
+        
+        rotationState = 0
+        rotationStates = [0:[2, 11, 0, -11], 1:[-20, -9, 0, 9], 2:[-2, -11, 0, 11], 3:[20, 9, 0, -9]]
+    }
+}
+
+class OPiece: tetrimino {
+    override init() {
+        super.init()
+        tMinos[0].setPosition(position: 194)
+        tMinos[1].setPosition(position: 195)
+        tMinos[2].setPosition(position: 184)
+        tMinos[3].setPosition(position: 185)
+        setColor(color: yellow)
+        
+        updateGhostTetrimino()
+        
+    }
+}
+
+class IPiece: tetrimino {
+    override func rotateRight() {
+        
+        for rotationTest in 0 ... 4 {
+            var canRotate = true
+            
+            let firstTMinoPredictedPosition = tMinos[0].position + rotationStates[rotationState]![0] + rotationOffsets[rotationState]![rotationTest]![0] + (10 * rotationOffsets[rotationState]![rotationTest]![1])
+            
+            for i in 0 ... 3 {
+                if canRotate {
+                    let predictedPosition = tMinos[i].position + rotationStates[rotationState]![i] + rotationOffsets[rotationState]![rotationTest]![0] + (10 * rotationOffsets[rotationState]![rotationTest]![1])
+                    
+                    //cant rotate because...
+                    if ((tMinos[i].position % 10) - 2 < 0) {
+                        if ((predictedPosition % 10) + 2 > 9) {
+                            canRotate = false
+                        }
+                    }
+                    if ((tMinos[i].position % 10) + 2 > 9) {
+                        if ((predictedPosition % 10) - 2 < 0) {
+                            canRotate = false
+                        }
+                    }
+                    if floor(Double(predictedPosition / 10)) != floor(Double(firstTMinoPredictedPosition / 10)) && (rotationState == 1 || rotationState == 3) {
+                        canRotate = false
+                    }
+                    if predictedPosition < 0 {
+                        canRotate = false
+                    }
+                    if minoSpaceGrid[predictedPosition] != Color.clear {
+                        canRotate = false
+                    }
+                }
+            }
+            
+            if canRotate {
+                
+                for i in 0 ... 3 {
+                    let predictedPosition = tMinos[i].position + rotationStates[rotationState]![i] + rotationOffsets[rotationState]![rotationTest]![0] + (10 * rotationOffsets[rotationState]![rotationTest]![1])
+                    
+                    tMinos[i].setPosition(position: predictedPosition)
+                }
+                
+                rotationState = (rotationState + 1) % 4
+                
+                updateGhostTetrimino()
+                updateMinoColor()
+                break
+            }
+        }
+    }
+    
+    override func rotateLeft() {
+        for rotationTest in 0 ... 4 {
+            var canRotate = true
+            
+            let firstTMinoPredictedPosition = tMinos[0].position - rotationStates[(rotationState + 3) % 4]![0] + (-1 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![0]) + (-1 * (10 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![1]))
+            
+            for i in 0 ... 3 {
+                if canRotate {
+                    let predictedPosition = tMinos[i].position - rotationStates[(rotationState + 3) % 4]![i] + (-1 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![0]) + (-1 * (10 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![1]))
+                    
+                    //cant rotate because...
+                    if ((tMinos[i].position % 10) - 2 < 0) {
+                        if ((predictedPosition % 10) + 2 > 9) {
+                            canRotate = false
+                        }
+                    }
+                    if ((tMinos[i].position % 10) + 2 > 9) {
+                        if ((predictedPosition % 10) - 2 < 0) {
+                            canRotate = false
+                        }
+                    }
+                    if floor(Double(predictedPosition / 10)) != floor(Double(firstTMinoPredictedPosition / 10)) && (rotationState == 1 || rotationState == 3) {
+                        canRotate = false
+                    }
+                    if predictedPosition < 0 {
+                        canRotate = false
+                    }
+                    if minoSpaceGrid[predictedPosition] != Color.clear {
+                        canRotate = false
+                    }
+                }
+            }
+            
+            if canRotate {
+                
+                for i in 0 ... 3 {
+                    let predictedPosition = tMinos[i].position - rotationStates[(rotationState + 3) % 4]![i] + (-1 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![0]) + (-1 * (10 * rotationOffsets[(rotationState + 3) % 4]![rotationTest]![1]))
+                    
+                    tMinos[i].setPosition(position: predictedPosition)
+                }
+                
+                rotationState = (rotationState + 3) % 4
+                
+                updateGhostTetrimino()
+                updateMinoColor()
+                break
+            }
+        }
+        
+        /*for i in 0 ... 3 {
+         tMinos[i].setPosition(position: tMinos[i].position - rotationStates[(rotationState + 3) % 4]![i])
+         }
+         
+         rotationState = (rotationState + 3) % 4
+         */
+    }
+    
+    override init() {
+        super.init()
+        tMinos[0].setPosition(position: 193)
+        tMinos[1].setPosition(position: 194)
+        tMinos[2].setPosition(position: 195)
+        tMinos[3].setPosition(position: 196)
+        setColor(color: lightBlue)
+        
+        updateGhostTetrimino()
+        
+        rotationState = 0
+        rotationStates = [0:[12, 1, -10, -21], 1:[-19, -10, -1, 8], 2:[-12, -1, 10, 21], 3:[19, 10, 1, -8]]
+        
+        rotationOffsets = [
+            /*0*/ 0:[0:[0, 0], 1:[-2, 0], 2:[1, 0], 3:[-2, -1], 4:[1, 4]],
+            /*1*/ 1:[0:[0, 0], 1:[-1, 0], 2:[2, 0], 3:[-1, 2], 4:[2, -1]],
+            /*2*/ 2:[0:[0, 0], 1:[2, 0], 2:[-1, 0], 3:[2, 1], 4:[-1, -2]],
+            /*3*/ 3:[0:[0, 0], 1:[1, 0], 2:[-2, 0], 3:[1, -2], 4:[-2, 1]]
+        ]
+    }
+}
+
+class TPiece: tetrimino {
+    override init() {
+        super.init()
+        tMinos[0].setPosition(position: 183)
+        tMinos[1].setPosition(position: 184)
+        tMinos[2].setPosition(position: 185)
+        tMinos[3].setPosition(position: 194)
+        setColor(color: purple)
+        
+        updateGhostTetrimino()
+
+        rotationState = 0
+        rotationStates = [0:[11, 0, -11, -9], 1:[-9, 0, 9, -11], 2:[-11, 0, 11, 9], 3:[9, 0, -9, 11]]
+    }
+}
+
+class SPiece: tetrimino {
+    override init() {
+        super.init()
+        tMinos[0].setPosition(position: 183)
+        tMinos[1].setPosition(position: 184)
+        tMinos[2].setPosition(position: 194)
+        tMinos[3].setPosition(position: 195)
+        setColor(color: green)
+        
+        updateGhostTetrimino()
+
+        rotationState = 0
+        rotationStates = [0:[11, 0, -9, -20], 1:[-9, 0, -11, -2], 2:[-11, 0, 9, 20], 3:[9, 0, 11, 2]]
+    }
+}
+
+class ZPiece: tetrimino {
+    override init() {
+        super.init()
+        tMinos[0].setPosition(position: 193)
+        tMinos[1].setPosition(position: 194)
+        tMinos[2].setPosition(position: 184)
+        tMinos[3].setPosition(position: 185)
+        setColor(color: red)
+        
+        updateGhostTetrimino()
+
+        rotationState = 0
+        rotationStates = [0:[2, -9, 0, -11], 1:[-20, -11, 0, 9], 2:[-2, 9, 0, 11], 3:[20, 11, 0, -9]]
+    }
+}
+
+var pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece]
+
+//randomize first bag
+let randBag = arc4random_uniform(UInt32(7))
+
+switch randBag {
+case 1:
+    pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece]
+case 2:
+    pieceBag = [tetriminoTypes.TPiece, tetriminoTypes.ZPiece, tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece]
+case 3:
+    pieceBag = [tetriminoTypes.ZPiece, tetriminoTypes.TPiece, tetriminoTypes.IPiece, tetriminoTypes.SPiece, tetriminoTypes.OPiece, tetriminoTypes.LPiece, tetriminoTypes.JPiece]
+case 4:
+    pieceBag = [tetriminoTypes.OPiece, tetriminoTypes.IPiece, tetriminoTypes.LPiece, tetriminoTypes.ZPiece, tetriminoTypes.TPiece, tetriminoTypes.JPiece, tetriminoTypes.SPiece]
+case 5:
+    pieceBag = [tetriminoTypes.JPiece, tetriminoTypes.OPiece, tetriminoTypes.ZPiece, tetriminoTypes.LPiece, tetriminoTypes.IPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece]
+case 6:
+    pieceBag = [tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.LPiece, tetriminoTypes.TPiece, tetriminoTypes.JPiece, tetriminoTypes.ZPiece, tetriminoTypes.IPiece]
+case 7:
+    pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.OPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.SPiece]
+default:
+    pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece]
+}
+
+func randomPieceType() -> tetriminoTypes {
+    var piece: tetriminoTypes = tetriminoTypes.IPiece
+    
+    let lower : UInt32 = 0
+    var upperInt : Int = pieceBag.count - 1
+    if upperInt < 0 {
+        upperInt = 0
+    }
+    
+    let upper : UInt32 = UInt32(upperInt)
+    
+    let rand = arc4random_uniform(upper - lower) + lower
+    
+    if pieceBag.count == 0 {
+        let randBagNum = arc4random_uniform(UInt32(7))
+        
+        switch randBagNum {
+        case 1:
+            pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece]
+        case 2:
+            pieceBag = [tetriminoTypes.TPiece, tetriminoTypes.ZPiece, tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece]
+        case 3:
+            pieceBag = [tetriminoTypes.ZPiece, tetriminoTypes.TPiece, tetriminoTypes.IPiece, tetriminoTypes.SPiece, tetriminoTypes.OPiece, tetriminoTypes.LPiece, tetriminoTypes.JPiece]
+        case 4:
+            pieceBag = [tetriminoTypes.OPiece, tetriminoTypes.IPiece, tetriminoTypes.LPiece, tetriminoTypes.ZPiece, tetriminoTypes.TPiece, tetriminoTypes.JPiece, tetriminoTypes.SPiece]
+        case 5:
+            pieceBag = [tetriminoTypes.JPiece, tetriminoTypes.OPiece, tetriminoTypes.ZPiece, tetriminoTypes.LPiece, tetriminoTypes.IPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece]
+        case 6:
+            pieceBag = [tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.LPiece, tetriminoTypes.TPiece, tetriminoTypes.JPiece, tetriminoTypes.ZPiece, tetriminoTypes.IPiece]
+        case 7:
+            pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.OPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.SPiece]
+        default:
+            pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece]
+        }
+    }
+    
+    piece = pieceBag[Int(rand)]
+    pieceBag.remove(at: Int(rand))
+    return piece
+}
+
+func pieceTypeConverter(tetriminoType: tetriminoTypes) -> tetrimino {
+    
+    var returnPiece: tetrimino
+    
+    switch tetriminoType {
+    case .IPiece:
+        returnPiece = IPiece() 
+    case .JPiece:
+        returnPiece = JPiece()
+    case .LPiece:
+        returnPiece = LPiece()
+    case .OPiece:
+        returnPiece = OPiece()
+    case .TPiece:
+        returnPiece = TPiece()
+    case .SPiece:
+        returnPiece = SPiece()
+    case .ZPiece:
+        returnPiece = ZPiece()
+    default:
+        returnPiece = IPiece()
+    }
+    
+    return returnPiece
+}
+
+func pieceConverter(tetrimino: tetrimino) -> tetriminoTypes {
+    
+    var returnPiece: tetriminoTypes
+    
+    switch tetrimino {
+    case is IPiece:
+        returnPiece = .IPiece 
+    case is JPiece:
+        returnPiece = .JPiece
+    case is LPiece:
+        returnPiece = .LPiece
+    case is OPiece:
+        returnPiece = .OPiece
+    case is TPiece:
+        returnPiece = .TPiece
+    case is SPiece:
+        returnPiece = .SPiece
+    case is ZPiece:
+        returnPiece = .ZPiece
+    default:
+        returnPiece = .IPiece
+    }
+    
+    return returnPiece
+}
+
+var activeTetrimino: tetrimino = pieceTypeConverter(tetriminoType: randomPieceType())
+
+//nextTetrimino stuff
+var nextTetriminos = [randomPieceType(), randomPieceType(), randomPieceType(), randomPieceType(), randomPieceType()]
+
+var holdTetrimino: tetriminoTypes? = nil
+
+class nextTetriminoWindow {
+    let frame = Rectangle()
+    
+    let minoPixels = [Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle(), Rectangle()]
+    
+    let pixelBaseColor = minoSpaceGridVisual[199]!.color
+    let pixelBaseBorderColor = minoSpaceGridVisual[199]!.borderColor
+    
+    init(scale: Double, position: Point) {
+        
+        let pixelSize = scale * blockSize
+        let pixelBorderWidth = minoSpaceGridVisual[199]!.borderWidth * scale
+        
+        frame.center = position
+        frame.size = Size(width: pixelSize * 4, height: pixelSize * 3)
+        frame.color = Color.clear
+        frame.borderColor = Color.white.darker(percent: 0.5)
+        
+        for i in 0 ... 11 {
+            
+            let x = position.x - (1.5 * pixelSize) + (Double(i % 4) * pixelSize)
+            let y = position.y + pixelSize - (floor(Double(i / 4)) * pixelSize)
+            
+            minoPixels[i].center = Point(x: x, y: y)
+            
+            minoPixels[i].size = Size(width: pixelSize, height: pixelSize)
+            minoPixels[i].color = pixelBaseColor
+            minoPixels[i].borderColor = pixelBaseBorderColor
+            minoPixels[i].borderWidth = pixelBorderWidth
+        }
+    }
+    
+    func updateWindow(tetrimino: tetriminoTypes) {
+        var updatedPixelColors = [Color]()
+        
+        let pbc = pixelBaseColor
+        
+        switch tetrimino {
+        case .IPiece:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  lightBlue, lightBlue, lightBlue, lightBlue,
+                                  pbc,       pbc,       pbc,       pbc]
+        case .JPiece:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  blue,      pbc,       pbc,       pbc,
+                                  blue,      blue,      blue,      pbc]
+        case .LPiece:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  pbc,       pbc,       orange,    pbc,
+                                  orange,    orange,    orange,    pbc]
+        case .OPiece:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  pbc,       yellow,    yellow,    pbc,
+                                  pbc,       yellow,    yellow,    pbc]
+        case .SPiece:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  pbc,       green,     green,     pbc,
+                                  green,     green,     pbc,       pbc]
+        case .TPiece:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  pbc,       purple,    pbc,       pbc,
+                                  purple,    purple,    purple,    pbc]
+        case .ZPiece:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  red,       red,       pbc,       pbc,
+                                  pbc,       red,       red,       pbc]
+        default:
+            updatedPixelColors = [pbc,       pbc,       pbc,       pbc,
+                                  pbc,       pbc,       pbc,       pbc,
+                                  pbc,       pbc,       pbc,       pbc]
+        }
+        
+        for i in 0 ... 11 {
+            minoPixels[i].color = updatedPixelColors[i]
+        }
+    }
+}
+var nextTetriminoWindows = [Int: nextTetriminoWindow]()
+
+var holdTetriminoWindow = nextTetriminoWindow(scale: nextWindowScale, position: Point(x: -25, y: 27))
+
+for i in 0 ... 4 {
+    let pixelSize = nextWindowScale * blockSize
+    
+    let position = Point(x: 25, y: 27 - (Double(i) * 3.5 * pixelSize))
+    
+    nextTetriminoWindows.updateValue(nextTetriminoWindow(scale: nextWindowScale, position: position), forKey: i)
+    
+}
+
+for window in nextTetriminoWindows {
+    window.value.updateWindow(tetrimino: nextTetriminos[window.key])
+}
+
+/*let lb = Rectangle(width: 7.5, height: 7.5)
+lb.color = Color.gray.withAlpha(alpha: 0.5)
+lb.center.x = -45
+lb.center.y = -25
+
+let rb = Rectangle(width: 7.5, height: 7.5)
+rb.color = Color.gray.withAlpha(alpha: 0.5)
+rb.center.x = -25
+rb.center.y = -25
+
+let db = Rectangle(width: 7.5, height: 7.5)
+db.color = Color.gray.withAlpha(alpha: 0.5)
+db.center.x = -35
+db.center.y = -25
+
+let ub = Rectangle(width: 15, height: 7.5)
+ub.color = Color.gray.withAlpha(alpha: 0.5)
+ub.center.x = -35
+ub.center.y = -15
+
+let lrb = Rectangle(width: 7.5, height: 7.5)
+lrb.color = Color.gray.withAlpha(alpha: 0.5)
+lrb.center.x = 25
+lrb.center.y = -25
+
+let rrb = Rectangle(width: 7.5, height: 7.5)
+rrb.color = Color.gray.withAlpha(alpha: 0.5)
+rrb.center.x = 45
+rrb.center.y = -25
+
+let hb = Rectangle(width: 15, height: 7.5)
+hb.color = Color.gray.withAlpha(alpha: 0.5)
+hb.center.x = 35
+hb.center.y = -15*/
+
+let dPad = Circle(radius: 10)
+dPad.color = Color.gray.withAlpha(alpha: 0.25)
+dPad.center = Point(x: -37, y: -8)
+
+var dPadDown = false
+
+var uDown = false
+var dDown = false
+var lDown = false
+var rDown = false
+
+var lrDown = false
+var rrDown = false
+
+var dDownStartTick = 0
+var lDownStartTick = 0
+var rDownStartTick = 0
+
+func restartGame() {
+    activeTetrimino.remove()
+    
+    let randBag = arc4random_uniform(UInt32(7))
+    
+    switch randBag {
+    case 1:
+        pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece]
+    case 2:
+        pieceBag = [tetriminoTypes.TPiece, tetriminoTypes.ZPiece, tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece]
+    case 3:
+        pieceBag = [tetriminoTypes.ZPiece, tetriminoTypes.TPiece, tetriminoTypes.IPiece, tetriminoTypes.SPiece, tetriminoTypes.OPiece, tetriminoTypes.LPiece, tetriminoTypes.JPiece]
+    case 4:
+        pieceBag = [tetriminoTypes.OPiece, tetriminoTypes.IPiece, tetriminoTypes.LPiece, tetriminoTypes.ZPiece, tetriminoTypes.TPiece, tetriminoTypes.JPiece, tetriminoTypes.SPiece]
+    case 5:
+        pieceBag = [tetriminoTypes.JPiece, tetriminoTypes.OPiece, tetriminoTypes.ZPiece, tetriminoTypes.LPiece, tetriminoTypes.IPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece]
+    case 6:
+        pieceBag = [tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.LPiece, tetriminoTypes.TPiece, tetriminoTypes.JPiece, tetriminoTypes.ZPiece, tetriminoTypes.IPiece]
+    case 7:
+        pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.OPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.SPiece]
+    default:
+        pieceBag = [tetriminoTypes.IPiece, tetriminoTypes.JPiece, tetriminoTypes.LPiece, tetriminoTypes.OPiece, tetriminoTypes.SPiece, tetriminoTypes.TPiece, tetriminoTypes.ZPiece]
+    }
+    
+    activeTetrimino = pieceTypeConverter(tetriminoType:randomPieceType())
+    
+    nextTetriminos = [randomPieceType(), randomPieceType(), randomPieceType(), randomPieceType(), randomPieceType()]
+    
+    holdTetrimino = nil
+    
+    for space in 0 ... 199 {
+        minoSpaceGrid[space]! = Color.clear
+    }
+    updateMinoSpaceGridVisual()
+    
+    for window in nextTetriminoWindows {
+        window.value.updateWindow(tetrimino: nextTetriminos[window.key])
+    }
+    for minoPixel in holdTetriminoWindow.minoPixels {
+        minoPixel.color = minoSpaceGridVisual[199]!.color
+        minoPixel.borderColor = minoSpaceGridVisual[199]!.borderColor
+    }
+    
+    tick = 0
+    
+    activeTetrimino.updateGhostTetrimino()
+    
+    gameEnded = false
+}
+
+let crrb = Circle(radius: 4)
+crrb.color = Color.gray.withAlpha(alpha: 0.25)
+crrb.center = Point(x: 45, y: -5)
+
+let clrb = Circle(radius: 4)
+clrb.color = Color.gray.withAlpha(alpha: 0.25)
+clrb.center = Point(x: 39, y: -11)
+
+let chb = Circle(radius: 4)
+chb.color = Color.gray.withAlpha(alpha: 0.25)
+chb.center = Point(x: 39, y: 1)
+
+updateMinoSpaceGridVisual()
+
+func update() {
+    tick += 1
+    
+    if tick > tickCap {
+        tick = 0
+    }
+    
+    activeTetrimino.endGameCheck()
+    
+    var tDown = false
+    
+    for tMino in activeTetrimino.tMinos {
+        if floor(Double(tMino.position / 10)) == 0 {
+            tDown = true
+        }
+        else if minoSpaceGrid[tMino.position - 10]! != Color.clear {
+            tDown = true
+        }
+    }
+    
+    if !tDown {
+        activeTetrimino.tetriminoDownTime = 0
+    }
+    
+    if tDown {
+        activeTetrimino.tetriminoDownTime += 1
+    }
+    
+    if activeTetrimino.tetriminoDownTime >= dropInterval / tickRate {
+        activeTetriminoDropped = true
+    }
+    
+    if remainder(Double(tick), dropInterval / tickRate) == 0 && !tDown {
+        activeTetrimino.moveDown()
+    }
+    
+    if activeTetriminoDropped {
+        for mino in activeTetrimino.tMinos {
+            minoSpaceGrid[mino.position] = mino.color
+        }
+        
+        activeTetrimino.remove()
+        updateMinoSpaceGridVisual()
+        
+        //clearing lines code
+        for i in 0 ... 3 {
+            for row in 0 ... 19 {
+                var spaceFilledCount = 0
+                
+                for column in 0 ... 9 {
+                    if minoSpaceGrid[(10 * row) + column]! != Color.clear {
+                        spaceFilledCount += 1
+                    }
+                }
+                
+                if spaceFilledCount == 10 {
+                    
+                    for column in 0 ... 9 {
+                        minoSpaceGrid[(10 * row) + column]! = Color.clear
+                    }
+                    
+                    for shiftingRow in row ... 18 {
+                        for column in 0 ... 9 {
+                            minoSpaceGrid[(shiftingRow * 10) + column]! = minoSpaceGrid[(shiftingRow * 10) + column + 10]!
+                        }
+                    }
+                    for column in 0 ... 9 {
+                        minoSpaceGrid[190 + column]! = Color.clear
+                    }
+                }
+            }
+        }
+        
+        updateMinoSpaceGridVisual()
+        
+        activeTetrimino = pieceTypeConverter(tetriminoType: nextTetriminos[0])
+        
+        dDownStartTick = 0
+        
+        for i in 0...4 {
+            if i == 4 {
+                nextTetriminos[4] = randomPieceType()
+            } else {
+                nextTetriminos[i] = nextTetriminos[i + 1]
+            }
+        }
+        
+        for window in nextTetriminoWindows {
+            window.value.updateWindow(tetrimino: nextTetriminos[window.key])
+        }
+        
+        activeTetriminoDropped = false
+    }
+}
+
+func dPadManager() {
+    Canvas.shared.onTouchDrag {
+        //allows touchpoints array to work
+    }
+    
+    if Canvas.shared.currentTouchPoints.count > 0 {
+        
+        for touchPoint in Canvas.shared.currentTouchPoints {
+            Canvas.shared.onTouchDrag {
+                
+            }
+            
+            if distance(touchPoint, dPad.center) <= dPad.radius * 2 {
+                
+                dPad.color = Color.gray.withAlpha(alpha: 0.75)
+                
+                if touchPoint.y > dPad.center.y + dPadHardDropDeadZone {
+                    if !uDown {
+                        activeTetrimino.drop()
+                    }
+                    
+                    uDown = true
+                    dDown = false
+                }
+                
+                if !uDown {
+                    if touchPoint.x > dPad.center.x + dPadLeftRightDeadZone {
+                        if !rDown || rDownStartTick == 0 {
+                            activeTetrimino.moveRight()
+                            
+                            rDownStartTick = tick
+                        }else if Double(tick - rDownStartTick) >= DAS / tickRate {
+                            if abs(remainder(Double(tick + rDownStartTick), ARR / tickRate)) <= 0.05 {
+                                activeTetrimino.moveRight()
+                            }else if ARR == 0 {
+                                for i in 1 ... 9 {
+                                    activeTetrimino.moveRight()
+                                }
+                            }
+                        }else if rDownStartTick > tick {
+                            if Double(tick - (rDownStartTick - tickCap)) >= DAS / tickRate {
+                                if abs(remainder(Double(tick + rDownStartTick), ARR / tickRate)) <= 0.05 {
+                                    activeTetrimino.moveRight()
+                                }else if ARR == 0 {
+                                    for i in 1 ... 9 {
+                                        activeTetrimino.moveRight()
+                                    }
+                                }
+                            }
+                        }
+                        
+                        rDown = true
+                        lDown = false
+                    }else if touchPoint.x < dPad.center.x - dPadLeftRightDeadZone {
+                        if !lDown || lDownStartTick == 0 {
+                            activeTetrimino.moveLeft()
+                            
+                            lDownStartTick = tick
+                        }else if Double(tick - lDownStartTick) >= DAS / tickRate {
+                            if abs(remainder(Double(tick + lDownStartTick), ARR / tickRate)) <= 0.05 {
+                                activeTetrimino.moveLeft()
+                            }else if ARR == 0 {
+                                for i in 1 ... 9 {
+                                    activeTetrimino.moveLeft()
+                                }
+                            }
+                        }else if lDownStartTick > tick {
+                            if Double(tick - (lDownStartTick - tickCap)) >= DAS / tickRate {
+                                if abs(remainder(Double(tick + lDownStartTick), ARR / tickRate)) <= 0.05 {
+                                    activeTetrimino.moveLeft()
+                                }else if ARR == 0 {
+                                    for i in 1 ... 9 {
+                                        activeTetrimino.moveLeft()
+                                    }
+                                }
+                            }
+                        }
+                        
+                        lDown = true
+                        rDown = false
+                    }
+                }
+                
+                if touchPoint.y < dPad.center.y - dPadSoftDropDeadZone {
+                    if dDownStartTick == 0 {
+                        activeTetrimino.moveDown()
+                        
+                        dDownStartTick = tick
+                    }else if abs(remainder(Double(tick + dDownStartTick), dARR / tickRate)) <= 0.1 {
+                        var moveDown = true
+                        
+                        for mino in activeTetrimino.tMinos {
+                            if floor(Double(mino.position / 10)) == 0 {
+                                moveDown = false
+                            }else if minoSpaceGrid[mino.position - 10]! != Color.clear {
+                                moveDown = false
+                            }
+                        }
+                        
+                        if moveDown {
+                            activeTetrimino.moveDown()
+                        }
+                    }
+                    
+                    dDown = true
+                    uDown = false
+                }
+            } else {
+                dPad.color = Color.gray.withAlpha(alpha: 0.25)
+                
+                lDownStartTick = 0
+                rDownStartTick = 0
+                
+                uDown = false
+                dDown = false
+                rDown = false
+                lDown = false
+            }
+        }
+    }else {
+        dPad.color = Color.gray.withAlpha(alpha: 0.25)
+        
+        lDownStartTick = 0
+        rDownStartTick = 0
+        
+        uDown = false
+        dDown = false
+        rDown = false
+        lDown = false
+    }
+}
+
+func buttonManager() {
+    crrb.onTouchDown {
+        activeTetrimino.rotateRight()
+        rrDown = true
+        crrb.color = Color.gray.withAlpha(alpha: 0.75)
+    }
+    crrb.onTouchUp {
+        rrDown = false
+        crrb.color = Color.gray.withAlpha(alpha: 0.25)
+    }
+    crrb.onTouchCancelled {
+        rrDown = false
+        crrb.color = Color.gray.withAlpha(alpha: 0.25)
+    }
+    
+    clrb.onTouchDown {
+        activeTetrimino.rotateLeft()
+        lrDown = true
+        clrb.color = Color.gray.withAlpha(alpha: 0.75)
+    }
+    clrb.onTouchUp {
+        lrDown = false
+        clrb.color = Color.gray.withAlpha(alpha: 0.25)
+    }
+    clrb.onTouchCancelled {
+        lrDown = false
+        clrb.color = Color.gray.withAlpha(alpha: 0.25)
+    }
+    
+    chb.onTouchDown {
+        if let actualHoldTetrimino = holdTetrimino, actualHoldTetrimino != nil {
+            
+            holdTetrimino! = pieceConverter(tetrimino: activeTetrimino)
+            activeTetrimino.remove()
+            activeTetrimino = pieceTypeConverter(tetriminoType: actualHoldTetrimino)
+            
+        }else {
+            activeTetrimino.remove()
+            
+            holdTetrimino = pieceConverter(tetrimino: activeTetrimino)
+            
+            activeTetrimino = pieceTypeConverter(tetriminoType: nextTetriminos[0])
+            
+            for i in 0...4 {
+                if i == 4 {
+                    nextTetriminos[4] = randomPieceType()
+                } else {
+                    nextTetriminos[i] = nextTetriminos[i + 1]
+                }
+            }
+        }
+        for window in nextTetriminoWindows {
+            window.value.updateWindow(tetrimino: nextTetriminos[window.key])
+        }
+        holdTetriminoWindow.updateWindow(tetrimino: holdTetrimino!)
+        
+        chb.color = Color.gray.withAlpha(alpha: 0.75)
+    }
+    chb.onTouchUp {
+        chb.color = Color.gray.withAlpha(alpha: 0.25)
+    }
+    chb.onTouchCancelled {
+        chb.color = Color.gray.withAlpha(alpha: 0.25)
+    }
+}
+
+func inputManager() {
+    if !gameEnded {
+        /*lb.onTouchDown {
+            activeTetrimino.moveLeft()
+            lb.color = Color.gray.withAlpha(alpha: 0.75)
+        }
+        lb.onTouchUp {
+            lb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        lb.onTouchCancelled {
+            lb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        rb.onTouchDown {
+            activeTetrimino.moveRight()
+            rb.color = Color.gray.withAlpha(alpha: 0.75)
+        }
+        rb.onTouchUp {
+            rb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        rb.onTouchCancelled {
+            rb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        
+        db.onTouchDown {
+            activeTetrimino.moveDown()
+            db.color = Color.gray.withAlpha(alpha: 0.75)
+        }
+        db.onTouchUp {
+            db.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        db.onTouchCancelled {
+            db.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        
+        ub.onTouchDown {
+            activeTetrimino.drop()
+            ub.color = Color.gray.withAlpha(alpha: 0.75)
+        }
+        ub.onTouchUp {
+            ub.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        ub.onTouchCancelled {
+            ub.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        
+        rrb.onTouchDown {
+            activeTetrimino.rotateRight()
+            rrb.color = Color.gray.withAlpha(alpha: 0.75)
+        }
+        rrb.onTouchUp {
+            rrb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        rrb.onTouchCancelled {
+            rrb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        
+        lrb.onTouchDown {
+            activeTetrimino.rotateLeft()
+            lrb.color = Color.gray.withAlpha(alpha: 0.75)
+        }
+        lrb.onTouchUp {
+            lrb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        lrb.onTouchCancelled {
+            lrb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        
+        hb.onTouchDown {
+            if let actualHoldTetrimino = holdTetrimino, actualHoldTetrimino != nil {
+                
+                holdTetrimino! = pieceConverter(tetrimino: activeTetrimino)
+                for mino in activeTetrimino.tMinos {
+                    mino.remove()
+                }
+                activeTetrimino = pieceTypeConverter(tetriminoType: actualHoldTetrimino)
+                
+            }else {
+                for mino in activeTetrimino.tMinos {
+                    mino.remove()
+                }
+                
+                holdTetrimino = pieceConverter(tetrimino: activeTetrimino)
+                
+                activeTetrimino = pieceTypeConverter(tetriminoType: nextTetriminos[0])
+                
+                for i in 0...4 {
+                    if i == 4 {
+                        nextTetriminos[4] = randomPieceType()
+                    } else {
+                        nextTetriminos[i] = nextTetriminos[i + 1]
+                    }
+                }
+            }
+            hb.color = Color.gray.withAlpha(alpha: 0.75)
+        }
+        hb.onTouchUp {
+            hb.color = Color.gray.withAlpha(alpha: 0.25)
+        }
+        hb.onTouchCancelled {
+            hb.color = Color.gray.withAlpha(alpha: 0.25)
+        }*/
+    }
+}
+
+let timer = Timer.scheduledTimer(withTimeInterval: tickRate, repeats: true, block: {_ in 
+    if !gameEnded {
+        //inputManager()
+        dPadManager()
+        buttonManager()
+        update()
+    }else {
+        restartGame()
+    }
+})
